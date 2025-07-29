@@ -1,0 +1,317 @@
+import pandas as pd
+import numpy as np
+import pickle
+import joblib
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from skmultilearn.problem_transform import BinaryRelevance
+import re
+import neattext.functions as nfx
+
+class MultilabelClassifier:
+    def __init__(self):
+        self.model = None
+        self.tfidf_vectorizer = None
+        self.target_cols = None
+        self.numeric_feature_names = None
+        
+    def preprocess_text(self, text):
+        """Та же предобработка, что использовалась при обучении"""
+        if pd.isna(text) or text == '':
+            return ''
+        
+        text = str(text).lower()
+        text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+        text = re.sub(r'\S+@\S+', '', text)
+        text = re.sub(r'\+?\d[\d\s\-\(\)]{10,}', '', text)
+        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        text = nfx.remove_stopwords(text, lang='ru')
+        
+        return text.strip()
+    
+    def create_marker_words_features(self, df):
+        """Создание признаков на основе слов-маркеров"""
+        marker_words = {
+            'ЗП': ['зарплат', 'оклад', 'деньги', 'выплат', 'доход', 'мало', 'недостаточно', 'финанс', 'бюджет'],
+            'График': ['график', 'время', 'смен', 'переработк', 'выходн', 'час', 'режим', 'ночн', 'сверхурочн'],
+            'Взаимоотношения с руководителем / коллегами': ['начальник', 'руководител', 'коллег', 'отношен', 'конфликт', 'команд', 'общен'],
+            'Условия труда': ['условия', 'рабочее место', 'оборудован', 'комфорт', 'температур', 'освещен', 'безопасност'],
+            'Отсутствие карьерного роста': ['карьер', 'рост', 'развит', 'повышен', 'перспектив', 'будущ', 'продвижен'],
+            'Стресс': ['стресс', 'нервн', 'напряжен', 'устал', 'выгоран', 'психолог', 'давлен', 'беспокойств'],
+            'Переезд': ['переезд', 'перееха', 'смен', 'местожительств', 'другой город', 'семь', 'жилье'],
+            'Транспортная доступность': ['дорог', 'транспорт', 'добират', 'далеко', 'метро', 'автобус', 'пробк'],
+            'Функционал': ['обязанност', 'задач', 'функци', 'работ', 'делать', 'должност', 'функционал'],
+            'Социальный пакет': ['соц', 'льгот', 'страховк', 'отпуск', 'больничн', 'компенсац', 'бонус'],
+            'Проблемы с адаптацией': ['адаптац', 'привык', 'новичок', 'ориентац', 'влива', 'знаком'],
+            'Состояние здоровья сотрудника / родственника': ['здоров', 'болезн', 'лечен', 'врач', 'больниц', 'родственник'],
+            'Ушел на другую работу': ['другая работ', 'новое место', 'предложен', 'лучш', 'интересн'],
+            'Нет возможности совмещать с учебой': ['учеб', 'институт', 'университет', 'студент', 'экзамен', 'сессия'],
+            'Призыв на воинскую службу / уход на СВО': ['армия', 'военн', 'призыв', 'служб', 'сво', 'мобилизац'],
+            'Заканчиваются разрешительные документы': ['документ', 'виза', 'разрешен', 'патент', 'регистрац', 'закончился']
+        }
+        
+        df = df.copy()
+        
+        for category, words in marker_words.items():
+            if category in self.target_cols:
+                df[f'{category}_marker_count'] = df['Комментарий_processed'].apply(
+                    lambda x: sum(1 for word in words if word in x.lower())
+                )
+                df[f'{category}_has_markers'] = (df[f'{category}_marker_count'] > 0).astype(int)
+        
+        return df
+    
+    def create_syntactic_features(self, df):
+        """Создание синтаксических признаков"""
+        df = df.copy()
+        
+        df['sentence_count'] = df['Комментарий'].str.count('[.!?]+')
+        df['avg_sentence_length'] = df['text_length'] / (df['sentence_count'] + 1)
+        df['comma_count'] = df['Комментарий'].str.count(',')
+        df['comma_density'] = df['comma_count'] / (df['word_count'] + 1)
+        
+        conjunctions = ['и', 'а', 'но', 'или', 'либо', 'также', 'тоже', 'либо', 'ни', 'да']
+        df['conjunction_count'] = df['Комментарий_processed'].apply(
+            lambda x: sum(1 for conj in conjunctions if f' {conj} ' in f' {x} ')
+        )
+        
+        prepositions = ['в', 'на', 'с', 'по', 'за', 'к', 'от', 'для', 'до', 'при', 'под', 'над', 'через']
+        df['preposition_count'] = df['Комментарий_processed'].apply(
+            lambda x: sum(1 for prep in prepositions if f' {prep} ' in f' {x} ')
+        )
+        df['preposition_density'] = df['preposition_count'] / (df['word_count'] + 1)
+        
+        negations = ['не', 'нет', 'ни', 'без', 'отсутств']
+        df['negation_count'] = df['Комментарий_processed'].apply(
+            lambda x: sum(1 for neg in negations if neg in x.lower())
+        )
+        
+        positive_words = ['хорош', 'отличн', 'замечательн', 'прекрасн', 'нравит', 'понравил', 'доволен']
+        df['positive_words_count'] = df['Комментарий_processed'].apply(
+            lambda x: sum(1 for word in positive_words if word in x.lower())
+        )
+        
+        negative_words = ['плох', 'ужасн', 'отвратительн', 'не нравит', 'недоволен', 'проблем', 'трудност']
+        df['negative_words_count'] = df['Комментарий_processed'].apply(
+            lambda x: sum(1 for word in negative_words if word in x.lower())
+        )
+        
+        intensifiers = ['очень', 'крайне', 'чрезвычайно', 'совершенно', 'абсолютно', 'максимально']
+        df['intensifier_count'] = df['Комментарий_processed'].apply(
+            lambda x: sum(1 for word in intensifiers if word in x.lower())
+        )
+        
+        return df
+    
+    def create_all_features(self, df):
+        """Создание всех признаков для новых данных"""
+        df = df.copy()
+        
+        # Предобработка текста
+        df['Комментарий_processed'] = df['Комментарий'].apply(self.preprocess_text)
+        
+        # Базовые признаки
+        df['text_length'] = df['Комментарий'].str.len()
+        df['word_count'] = df['Комментарий'].str.split().str.len()
+        df['exclamation_count'] = df['Комментарий'].str.count('!')
+        df['question_count'] = df['Комментарий'].str.count('\?')
+        df['capital_count'] = df['Комментарий'].str.count('[А-ЯЁ]')
+        
+        # Признаки слов-маркеров
+        df = self.create_marker_words_features(df)
+        
+        # Синтаксические признаки
+        df = self.create_syntactic_features(df)
+        
+        return df
+    
+    def fit(self, df):
+        """Обучение модели"""
+        # Определение целевых переменных
+        self.target_cols = ['Взаимоотношения с руководителем / коллегами', 'График', 'ЗП', 
+                           'Заканчиваются разрешительные документы', 'Нет возможности совмещать с учебой', 
+                           'Отсутствие карьерного роста', 'Переезд', 'Призыв на воинскую службу / уход на СВО', 
+                           'Проблемы с адаптацией', 'Состояние здоровья сотрудника / родственника', 
+                           'Социальный пакет', 'Стресс', 'Транспортная доступность', 'Условия труда', 
+                           'Ушел на другую работу', 'Функционал']
+        
+        # Создание признаков
+        df_processed = self.create_all_features(df)
+        
+        # Векторизация текста
+        self.tfidf_vectorizer = TfidfVectorizer(
+            max_features=10000,
+            ngram_range=(1, 3),
+            min_df=2,
+            max_df=0.95,
+            sublinear_tf=True,
+            norm='l2'
+        )
+        
+        X_text = self.tfidf_vectorizer.fit_transform(df_processed['Комментарий_processed']).toarray()
+        
+        # Числовые признаки
+        self.numeric_feature_names = [col for col in df_processed.columns 
+                                     if col not in ['Комментарий', 'Комментарий_processed', 'Категория'] + self.target_cols]
+        X_numeric = df_processed[self.numeric_feature_names].fillna(0).values
+        
+        # Объединение признаков
+        X = np.hstack([X_text, X_numeric])
+        y = df[self.target_cols]
+        
+        # Обучение модели
+        self.model = BinaryRelevance(RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42))
+        self.model.fit(X, y)
+        
+        return self
+    
+    def predict(self, df):
+        """Предсказание для новых данных"""
+        if self.model is None:
+            raise ValueError("Модель не обучена! Сначала вызовите fit()")
+        
+        # Создание тех же признаков
+        df_processed = self.create_all_features(df)
+        
+        # Векторизация текста (используем уже обученный векторизатор)
+        X_text = self.tfidf_vectorizer.transform(df_processed['Комментарий_processed']).toarray()
+        
+        # Числовые признаки (важно: использовать те же колонки в том же порядке!)
+        X_numeric = df_processed[self.numeric_feature_names].fillna(0).values
+        
+        # Объединение признаков
+        X = np.hstack([X_text, X_numeric])
+        
+        # Предсказание
+        predictions = self.model.predict(X)
+        probabilities = self.model.predict_proba(X)
+        
+        # Возвращаем DataFrame с результатами
+        result_df = df.copy()
+        
+        # Добавляем предсказания (0/1)
+        for i, col in enumerate(self.target_cols):
+            result_df[f'{col}_predicted'] = predictions[:, i]
+            result_df[f'{col}_probability'] = probabilities[:, i]
+        
+        return result_df
+    
+    def save_model(self, filepath):
+        """Сохранение модели"""
+        model_data = {
+            'model': self.model,
+            'tfidf_vectorizer': self.tfidf_vectorizer,
+            'target_cols': self.target_cols,
+            'numeric_feature_names': self.numeric_feature_names
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"Модель сохранена в {filepath}")
+    
+    def load_model(self, filepath):
+        """Загрузка модели"""
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        self.model = model_data['model']
+        self.tfidf_vectorizer = model_data['tfidf_vectorizer']
+        self.target_cols = model_data['target_cols']
+        self.numeric_feature_names = model_data['numeric_feature_names']
+        
+        print(f"Модель загружена из {filepath}")
+        return self
+
+# ПРИМЕР ИСПОЛЬЗОВАНИЯ:
+
+# 1. ОБУЧЕНИЕ И СОХРАНЕНИЕ МОДЕЛИ
+def train_and_save_model():
+    """Обучение модели на тренировочных данных"""
+    
+    # Загрузка обучающих данных
+    df_train = pd.read_excel('training_data.xlsx')
+    
+    # Обработка категорий (как у вас было)
+    all_cat = set()
+    for cat in df_train['Категория']:
+        catgrs = [c.strip() for c in cat.split(';')]
+        all_cat.update(catgrs)
+    all_cat = sorted(list(all_cat))
+    
+    for cat in all_cat:
+        df_train[cat] = df_train['Категория'].apply(lambda x: 1.0 if cat in [c.strip() for c in x.split(';')] else 0.0)
+    
+    df_train['Комментарий'] = df_train['Комментарий'].fillna('').astype(str)
+    
+    # Создание и обучение модели
+    classifier = MultilabelClassifier()
+    classifier.fit(df_train)
+    
+    # Сохранение модели
+    classifier.save_model('multilabel_model.pkl')
+    
+    return classifier
+
+# 2. ИСПОЛЬЗОВАНИЕ МОДЕЛИ ДЛЯ НОВЫХ ДАННЫХ
+def classify_new_data(new_data_file):
+    """Классификация новых данных"""
+    
+    # Загрузка модели
+    classifier = MultilabelClassifier()
+    classifier.load_model('multilabel_model.pkl')
+    
+    # Загрузка новых данных
+    # Новые данные должны содержать колонку 'Комментарий'
+    df_new = pd.read_excel(new_data_file)
+    df_new['Комментарий'] = df_new['Комментарий'].fillna('').astype(str)
+    
+    # Предсказание
+    results = classifier.predict(df_new)
+    
+    # Сохранение результатов
+    results.to_excel('classified_results.xlsx', index=False)
+    
+    print("Результаты классификации сохранены в 'classified_results.xlsx'")
+    
+    return results
+
+# 3. ПРИМЕР ИСПОЛЬЗОВАНИЯ ДЛЯ ОДНОГО КОММЕНТАРИЯ
+def classify_single_comment(comment_text):
+    """Классификация одного комментария"""
+    
+    # Загрузка модели
+    classifier = MultilabelClassifier()
+    classifier.load_model('multilabel_model.pkl')
+    
+    # Создание DataFrame с одним комментарием
+    df_single = pd.DataFrame({'Комментарий': [comment_text]})
+    
+    # Предсказание
+    result = classifier.predict(df_single)
+    
+    # Вывод результатов
+    print(f"Комментарий: {comment_text}")
+    print("\nПредсказанные категории:")
+    
+    for col in classifier.target_cols:
+        if result[f'{col}_predicted'].iloc[0] == 1:
+            prob = result[f'{col}_probability'].iloc[0]
+            print(f"  {col}: {prob:.3f}")
+    
+    return result
+
+# ЗАПУСК:
+if __name__ == "__main__":
+    # Обучение и сохранение модели (делается один раз)
+    print("Обучение модели...")
+    train_and_save_model()
+    
+    # Классификация новых данных (можно запускать много раз)
+    print("\nКлассификация новых данных...")
+    # classify_new_data('new_comments.xlsx')
+    
+    # Пример классификации одного комментария
+    print("\nПример классификации:")
+    classify_single_comment("Увольняюсь из-за маленькой зарплаты и плохих отношений с начальником")
