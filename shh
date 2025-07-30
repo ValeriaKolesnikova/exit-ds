@@ -315,3 +315,144 @@ if __name__ == "__main__":
     # Пример классификации одного комментария
     print("\nПример классификации:")
     classify_single_comment("Увольняюсь из-за маленькой зарплаты и плохих отношений с начальником")
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import chi2_contingency
+
+# Загрузка данных (пример)
+# df = pd.read_csv('увольнения.csv')
+# Для примера используем те же синтетические данные, что и ранее
+# ... (код создания df остается как в предыдущем примере)
+
+# 1. Ключевой этап: классификация увольнений по типу упоминания ЗП
+def classify_reasons(row):
+    """Классифицирует тип упоминания зарплаты в причинах увольнения"""
+    reasons = [row['Причина1'], row['Причина2'], row['Причина3']]
+    reasons = [r for r in reasons if pd.notna(r)]  # Убираем NaN
+    
+    has_salary = 'Низкая ЗП' in reasons
+    has_schedule = 'Сокращение смен' in reasons
+    
+    if has_salary and not has_schedule:
+        # Проверяем, что ЗП была единственной причиной
+        if len(reasons) == 1:
+            return 'Только ЗП'
+        else:
+            return 'ЗП + другие причины (без графика)'
+    
+    elif has_salary and has_schedule:
+        return 'ЗП + Сокращение смен'
+    
+    elif not has_salary:
+        return 'Без упоминания ЗП'
+    
+    return 'Неопределено'
+
+# Применяем классификацию
+df['Тип_упоминания_ЗП'] = df.apply(classify_reasons, axis=1)
+
+# 2. Глубокий анализ по складам
+warehouse_analysis = pd.crosstab(
+    df['Склад'], 
+    df['Тип_упоминания_ЗП'],
+    normalize='index'  # Нормализуем по строкам (проценты внутри склада)
+).round(4) * 100
+
+print("\nКЛЮЧЕВОЙ АНАЛИЗ: Как упоминается зарплата по складам (в %)")
+print("=========================================================")
+print(warehouse_analysis)
+
+# 3. Визуализация - именно то, что вам нужно!
+plt.figure(figsize=(14, 8))
+
+# Создаем стекированный барплот
+stacked_data = warehouse_analysis[['Только ЗП', 'ЗП + Сокращение смен', 'ЗП + другие причины (без графика)']].copy()
+
+# Сортируем склады по доле проблемного случая (ЗП + Сокращение смен)
+stacked_data = stacked_data.sort_values('ЗП + Сокращение смен', ascending=False)
+
+ax = stacked_data.plot(kind='bar', stacked=True, colormap='viridis', edgecolor='black')
+plt.title('Структура упоминаний ЗП по складам', fontsize=16)
+plt.ylabel('Доля случаев (%)', fontsize=12)
+plt.xlabel('Склад', fontsize=12)
+plt.xticks(rotation=0)
+plt.legend(title='Тип упоминания', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+# Добавляем аннотации с процентами
+for p in ax.patches:
+    width = p.get_width()
+    height = p.get_height()
+    x, y = p.get_xy()
+    
+    # Показываем только значимые значения (от 5%)
+    if height > 5:
+        ax.annotate(f'{height:.1f}%', (x + width/2, y + height/2), 
+                    ha='center', va='center', color='white', fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('анализ_зп_по_складам.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 4. Проверка статистической значимости различий
+print("\nСТАТИСТИЧЕСКАЯ ЗНАЧИМОСТЬ РАЗЛИЧИЙ МЕЖДУ СКЛАДАМИ")
+print("=================================================")
+
+# Группируем данные для теста
+only_salary = df[df['Тип_упоминания_ЗП'] == 'Только ЗП'].groupby('Склад').size()
+schedule_issue = df[df['Тип_упоминания_ЗП'] == 'ЗП + Сокращение смен'].groupby('Склад').size()
+
+# Создаем таблицу сопряженности для каждого склада
+for warehouse in df['Склад'].unique():
+    obs = np.array([
+        [only_salary.get(warehouse, 0), schedule_issue.get(warehouse, 0)],
+        [len(df[(df['Склад'] == warehouse) & (df['Тип_упоминания_ЗП'] == 'Только ЗП')]), 
+         len(df[(df['Склад'] == warehouse) & (df['Тип_упоминания_ЗП'] == 'ЗП + Сокращение смен')])]
+    ])
+    
+    # Проверяем, достаточно ли данных для теста
+    if obs.min() >= 5:
+        chi2, p, _, _ = chi2_contingency(obs)
+        print(f"Склад {warehouse}: p-value = {p:.4f} (Только ЗП vs ЗП+Сокращение)")
+        if p < 0.05:
+            print(f"  ! Статистически значимые различия (p < 0.05)")
+
+# 5. Глубокий дрил-даун по проблемным складам
+print("\nДЕТАЛЬНЫЙ АНАЛИЗ ПРОБЛЕМНЫХ СКЛАДОВ")
+print("=====================================")
+
+# Находим склад с максимальной долей "ЗП + Сокращение смен"
+problem_warehouse = warehouse_analysis['ЗП + Сокращение смен'].idxmax()
+problem_rate = warehouse_analysis.loc[problem_warehouse, 'ЗП + Сокращение смен']
+
+print(f"⚠️ Самый проблемный склад: {problem_warehouse} "
+      f"(в {problem_rate:.1f}% случаев увольнения по ЗП связаны с графиком)")
+
+# Анализируем конкретные случаи
+problem_cases = df[(df['Склад'] == problem_warehouse) & 
+                  (df['Тип_упоминания_ЗП'] == 'ЗП + Сокращение смен')]
+
+print(f"\nПримеры реальных случаев (первые 3 записи):")
+print(problem_cases[['ФИО', 'Причина1', 'Причина2', 'Причина3']].head(3))
+
+# 6. Рекомендации по исправлению ситуации
+print("\nРЕКОМЕНДАЦИИ ДЛЯ HR-ПОЛИТИКИ")
+print("==============================")
+
+if problem_rate > 30:
+    print(f"1. На складе {problem_warehouse} критическая ситуация:")
+    print(f"   - В {problem_rate:.1f}% случаев увольнения по 'низкой ЗП' на самом деле проблема в графике")
+    print("   - Рекомендуется срочно провести анализ политики расписания смен")
+    print("   - Внедрить прозрачную систему расчета ЗП с учетом отработанных часов")
+else:
+    print(f"1. На складе {problem_warehouse} умеренная проблема:")
+    print(f"   - В {problem_rate:.1f}% случаев увольнения по 'низкой ЗП' связана с графиком")
+    print("   - Рекомендуется улучшить коммуникацию политики расписания с сотрудниками")
+
+print("\n2. Для всех складов:")
+print("   - При увольнении фиксировать НЕ ТОЛЬКО основную причину, но и контекст")
+print("   - Внедрить диагностический вопрос: 'Как график работы повлиял на ваше решение?'")
+print("   - Провести обучение руководителей: как выявлять скрытые причины увольнения")
