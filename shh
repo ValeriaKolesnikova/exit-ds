@@ -1,6 +1,45 @@
 import matplotlib.pyplot as plt
 
 # Предполагаемые данные
+# stacked_data содержит колонки: 'Только ЗП', 'ЗП + График', 'ЗП + другие причины (без графика)'
+
+# Создаём горизонтальную стопочную диаграмму
+plt.figure(figsize=(16, 8))  # Установим более разумный размер
+ax = stacked_data.plot(kind='barh', stacked=True, colormap='viridis', edgecolor='black')
+
+# Настройки заголовка и осей
+plt.title('Структура упоминаний ЗП по складам', fontsize=16)
+plt.ylabel('ОСП', fontsize=12)
+plt.xlabel('Доля случаев (%)', fontsize=12)
+
+# Легенда
+plt.legend(title='Тип упоминания', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+# Улучшаем метки на оси Y
+plt.yticks(fontsize=10)
+
+# Добавляем подписи к каждому сегменту
+for p in ax.patches:
+    width = p.get_width()
+    height = p.get_height()
+    x, y = p.get_xy()
+    if width > 0:  # Отображаем только ненулевые значения
+        ax.annotate(f'{width:.1f}%', 
+                    (x + width / 2, y + height / 2),
+                    ha='center',
+                    va='center',
+                    color='white',
+                    fontsize=8)
+
+# Убираем предупреждения о tight layout
+plt.tight_layout(rect=[0, 0, 1, 0.95])  # Оставляем место для легенды
+
+# Отображаем график
+plt.show()
+
+import matplotlib.pyplot as plt
+
+# Предполагаемые данные
 # warehouse_analysis содержит колонки: 'Только ЗП', 'ЗП + График', 'ЗП + другие причины (без графика)'
 
 # Сортируем данные по значению 'ЗП + График' в порядке убывания
