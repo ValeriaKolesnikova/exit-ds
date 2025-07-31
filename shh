@@ -1,3 +1,13 @@
+def глубокая_очистка(text):
+    """Убираем все лишнее из имен"""
+    text = str(text)
+    text = text.strip()                    # убираем пробелы по краям
+    text = text.lower()                    # нижний регистр
+    text = ' '.join(text.split())          # убираем двойные пробелы
+    text = text.replace('ё', 'е')          # заменяем ё на е
+    return text
+
+
 merged = pd.merge(
     df[['ФИО', 'Дата увольнения']].reset_index(drop=True),
     df_qw[['Сотрудник', 'new_data']].reset_index(drop=True),
