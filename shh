@@ -1,3 +1,20 @@
+merged = pd.merge(
+    df[['ФИО', 'Дата увольнения']].reset_index(drop=True),
+    df_qw[['Сотрудник', 'new_data']].reset_index(drop=True),
+    left_on='ФИО',
+    right_on='Сотрудник',
+    how='left'
+)
+
+if 'new_data' in merged.columns and 'ОСЛ' in merged.columns:
+    # Безопасное обновление данных
+    mask = merged['new_data'].notna()
+    merged.loc[mask, 'ОСЛ'] = merged.loc[mask, 'new_data']
+else:
+    # Безопасная обработка несовпавших записей
+    not_found = merged[merged['Сотрудник'].isna()]['ФИО'].dropna().tolist()
+    print(f"Не найдено: {not_found}")
+
 import matplotlib.pyplot as plt
 
 # Предполагаемые данные
