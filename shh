@@ -1,3 +1,56 @@
+WITH hierarchy_path AS (
+    -- Якорная часть: начинаем с элементов, которые есть в заявках
+    SELECT 
+        h.ссылка,
+        h.родитель,
+        h.код,
+        h.наименование,
+        h.ссылка as original_link,
+        1 as level,
+        CAST(h.наименование AS NVARCHAR(MAX)) as full_path,
+        CAST(h.код AS NVARCHAR(MAX)) as code_path
+    FROM hierarchy_table h
+    WHERE h.ссылка IN (SELECT DISTINCT ссылка_на_вид FROM заявки)
+    
+    UNION ALL
+    
+    -- Рекурсивная часть: поднимаемся по родителям
+    SELECT 
+        h.ссылка,
+        h.родитель,
+        h.код,
+        h.наименование,
+        hp.original_link,
+        hp.level + 1,
+        CAST(h.наименование + ' -> ' + hp.full_path AS NVARCHAR(MAX)) as full_path,
+        CAST(h.код + '.' + hp.code_path AS NVARCHAR(MAX)) as code_path
+    FROM hierarchy_table h
+    INNER JOIN hierarchy_path hp ON h.ссылка = hp.родитель
+    WHERE hp.level < 10  -- Ограничение глубины для предотвращения циклов
+)
+SELECT 
+    z.*,
+    hp.full_path as [Полный путь иерархии],
+    hp.code_path as [Полный код иерархии],
+    hp.level as [Уровень вложенности]
+FROM заявки z
+LEFT JOIN (
+    SELECT 
+        original_link,
+        full_path,
+        code_path,
+        level,
+        ROW_NUMBER() OVER (PARTITION BY original_link ORDER BY level DESC) as rn
+    FROM hierarchy_path
+) hp ON z.ссылка_на_вид = hp.original_link AND hp.rn = 1;
+
+
+
+
+
+
+
+
 SELECT 
     z.*,
     COALESCE(h1.наименование, '') ||
