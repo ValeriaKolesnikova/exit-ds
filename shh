@@ -1,51 +1,34 @@
-;WITH Hierarchy AS (
+WITH Hierarchy AS (
+    -- стартуем с конечных видов (из заявок)
     SELECT 
         r.Id AS RequestId,
         d.ссылка,
         d.родитель,
+        d.код,
         d.наименование,
-        1 AS lvl
+        CAST(d.наименование AS NVARCHAR(MAX)) AS full_path
     FROM Requests r
     JOIN Dict d ON r.ВидЗаявки = d.ссылка
 
     UNION ALL
 
+    -- поднимаемся вверх по иерархии
     SELECT 
         h.RequestId,
         p.ссылка,
         p.родитель,
+        p.код,
         p.наименование,
-        h.lvl + 1
+        CAST(p.наименование + N' -> ' + h.full_path AS NVARCHAR(MAX)) AS full_path
     FROM Dict p
     JOIN Hierarchy h ON p.ссылка = h.родитель
 )
-, Levels AS (
-    SELECT 
-        RequestId,
-        lvl,
-        наименование
-    FROM Hierarchy
-)
--- Теперь строим динамический SQL для pivot
-DECLARE @maxLvl INT;
-SELECT @maxLvl = MAX(lvl) FROM Levels;
-
-DECLARE @sql NVARCHAR(MAX) = N'SELECT RequestId';
-
-DECLARE @i INT = 1;
-WHILE @i <= @maxLvl
-BEGIN
-    SET @sql += N',
-       MAX(CASE WHEN lvl = ' + CAST(@i AS NVARCHAR) + 
-              ' THEN наименование END) AS Level' + CAST(@i AS NVARCHAR);
-    SET @i += 1;
-END;
-
-SET @sql += N'
-FROM Levels
-GROUP BY RequestId
-ORDER BY RequestId;';
-
+-- берём верхний уровень (самый длинный путь для каждой заявки)
+SELECT 
+    RequestId,
+    MAX(full_path) AS full_hierarchy
+FROM Hierarchy
+GROUP BY RequestId;
 
 def глубокая_очистка(text):
     """Убираем все лишнее из имен"""
