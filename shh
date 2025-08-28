@@ -1,34 +1,17 @@
-WITH Hierarchy AS (
-    -- стартуем с конечных видов (из заявок)
-    SELECT 
-        r.Id AS RequestId,
-        d.ссылка,
-        d.родитель,
-        d.код,
-        d.наименование,
-        CAST(d.наименование AS NVARCHAR(MAX)) AS full_path
-    FROM Requests r
-    JOIN Dict d ON r.ВидЗаявки = d.ссылка
-
-    UNION ALL
-
-    -- поднимаемся вверх по иерархии
-    SELECT 
-        h.RequestId,
-        p.ссылка,
-        p.родитель,
-        p.код,
-        p.наименование,
-        CAST(p.наименование + N' -> ' + h.full_path AS NVARCHAR(MAX)) AS full_path
-    FROM Dict p
-    JOIN Hierarchy h ON p.ссылка = h.родитель
-)
--- берём верхний уровень (самый длинный путь для каждой заявки)
 SELECT 
-    RequestId,
-    MAX(full_path) AS full_hierarchy
-FROM Hierarchy
-GROUP BY RequestId;
+    z.*,
+    COALESCE(h1.наименование, '') ||
+    CASE WHEN h2.наименование IS NOT NULL THEN ' -> ' || h2.наименование ELSE '' END ||
+    CASE WHEN h3.наименование IS NOT NULL THEN ' -> ' || h3.наименование ELSE '' END ||
+    CASE WHEN h4.наименование IS NOT NULL THEN ' -> ' || h4.наименование ELSE '' END ||
+    CASE WHEN h5.наименование IS NOT NULL THEN ' -> ' || h5.наименование ELSE '' END as full_path
+FROM заявки z
+LEFT JOIN hierarchy_table h5 ON z.ссылка_на_вид = h5.ссылка
+LEFT JOIN hierarchy_table h4 ON h5.родитель = h4.ссылка  
+LEFT JOIN hierarchy_table h3 ON h4.родитель = h3.ссылка
+LEFT JOIN hierarchy_table h2 ON h3.родитель = h2.ссылка
+LEFT JOIN hierarchy_table h1 ON h2.родитель = h1.ссылка
+WHERE h1.родитель IS NULL OR h1.ссылка IS NULL;
 
 def глубокая_очистка(text):
     """Убираем все лишнее из имен"""
