@@ -1,70 +1,99 @@
-WITH hierarchy_path AS (
-    -- Якорная часть: начинаем с элементов, которые есть в заявках
+-- шаг 1. агрегаты по логам
+WITH log_summary AS (
     SELECT 
-        h.ссылка,
-        h.родитель,
-        h.код,
-        h.наименование,
-        h.ссылка as original_link,
-        1 as level,
-        CAST(h.наименование AS NVARCHAR(MAX)) as full_path,
-        CAST(h.код AS NVARCHAR(MAX)) as code_path
-    FROM hierarchy_table h
-    WHERE h.ссылка IN (SELECT DISTINCT ссылка_на_вид FROM заявки)
-    
-    UNION ALL
-    
-    -- Рекурсивная часть: поднимаемся по родителям
+        Number,
+        Автор,
+        MIN([Дата старта]) AS log_start,
+        MAX([Дата окончания]) AS log_end,
+        COUNT(*) AS log_events,
+        STRING_AGG(ObjectName, ', ') AS objects
+    FROM Table1
+    GROUP BY Number, Автор
+),
+-- шаг 2. агрегаты по стадиям
+stage_summary AS (
     SELECT 
-        h.ссылка,
-        h.родитель,
-        h.код,
-        h.наименование,
-        hp.original_link,
-        hp.level + 1,
-        CAST(h.наименование + ' -> ' + hp.full_path AS NVARCHAR(MAX)) as full_path,
-        CAST(h.код + '.' + hp.code_path AS NVARCHAR(MAX)) as code_path
-    FROM hierarchy_table h
-    INNER JOIN hierarchy_path hp ON h.ссылка = hp.родитель
-    WHERE hp.level < 10  -- Ограничение глубины для предотвращения циклов
+        [Номер документа] AS Number,
+        Автор,
+        MIN([дата старта]) AS stage_start,
+        MAX([дата завершения]) AS stage_end,
+        COUNT(*) AS stages,
+        STRING_AGG(DISTINCT Согласователь, ', ') AS approvers
+    FROM Table2
+    GROUP BY [Номер документа], Автор
+),
+-- шаг 3. нумеруем контуры по заявке
+Numbered AS (
+    SELECT
+        t2.[Номер документа] AS Number,
+        t2.Автор,
+        t2.[Имя контура] AS ContourName,
+        t2.[Дата поступления на контур] AS DateIn,
+        t2.[Дата согласования] AS DateOut,
+        t2.Согласователь AS Approver,
+        ROW_NUMBER() OVER (
+            PARTITION BY t2.[Номер документа], t2.Автор 
+            ORDER BY t2.[Дата поступления на контур]
+        ) AS rn
+    FROM Table2 t2
 )
+-- сохраняем контуры во временную таблицу
+SELECT * INTO #Numbered FROM Numbered;
+
+-- определяем сколько максимум контуров
+DECLARE @maxRn INT;
+SELECT @maxRn = MAX(rn) FROM #Numbered;
+
+-- динамически строим SQL для разворота
+DECLARE @sql NVARCHAR(MAX) = N'
 SELECT 
-    z.*,
-    hp.full_path as [Полный путь иерархии],
-    hp.code_path as [Полный код иерархии],
-    hp.level as [Уровень вложенности]
-FROM заявки z
-LEFT JOIN (
-    SELECT 
-        original_link,
-        full_path,
-        code_path,
-        level,
-        ROW_NUMBER() OVER (PARTITION BY original_link ORDER BY level DESC) as rn
-    FROM hierarchy_path
-) hp ON z.ссылка_на_вид = hp.original_link AND hp.rn = 1;
+    l.Number,
+    l.Автор,
+    l.log_start,
+    l.log_end,
+    l.log_events,
+    l.objects,
+    s.stage_start,
+    s.stage_end,
+    s.stages,
+    s.approvers';
 
+DECLARE @i INT = 1;
+WHILE @i <= @maxRn
+BEGIN
+    SET @sql += N',
+    MAX(CASE WHEN rn = ' + CAST(@i AS NVARCHAR) + 
+        ' THEN ContourName END) AS Contour' + CAST(@i AS NVARCHAR) + '_Name
+  , MAX(CASE WHEN rn = ' + CAST(@i AS NVARCHAR) + 
+        ' THEN DateIn END) AS Contour' + CAST(@i AS NVARCHAR) + '_DateIn
+  , MAX(CASE WHEN rn = ' + CAST(@i AS NVARCHAR) + 
+        ' THEN DateOut END) AS Contour' + CAST(@i AS NVARCHAR) + '_DateOut
+  , MAX(CASE WHEN rn = ' + CAST(@i AS NVARCHAR) + 
+        ' THEN Approver END) AS Contour' + CAST(@i AS NVARCHAR) + '_Approver';
+    SET @i += 1;
+END;
 
+SET @sql += N'
+FROM log_summary l
+JOIN stage_summary s 
+  ON l.Number = s.Number AND l.Автор = s.Автор
+LEFT JOIN #Numbered n
+  ON l.Number = n.Number AND l.Автор = n.Автор
+GROUP BY 
+    l.Number,
+    l.Автор,
+    l.log_start,
+    l.log_end,
+    l.log_events,
+    l.objects,
+    s.stage_start,
+    s.stage_end,
+    s.stages,
+    s.approvers
+ORDER BY l.Number;';
 
+EXEC sp_executesql @sql;
 
-
-
-
-
-SELECT 
-    z.*,
-    COALESCE(h1.наименование, '') ||
-    CASE WHEN h2.наименование IS NOT NULL THEN ' -> ' || h2.наименование ELSE '' END ||
-    CASE WHEN h3.наименование IS NOT NULL THEN ' -> ' || h3.наименование ELSE '' END ||
-    CASE WHEN h4.наименование IS NOT NULL THEN ' -> ' || h4.наименование ELSE '' END ||
-    CASE WHEN h5.наименование IS NOT NULL THEN ' -> ' || h5.наименование ELSE '' END as full_path
-FROM заявки z
-LEFT JOIN hierarchy_table h5 ON z.ссылка_на_вид = h5.ссылка
-LEFT JOIN hierarchy_table h4 ON h5.родитель = h4.ссылка  
-LEFT JOIN hierarchy_table h3 ON h4.родитель = h3.ссылка
-LEFT JOIN hierarchy_table h2 ON h3.родитель = h2.ссылка
-LEFT JOIN hierarchy_table h1 ON h2.родитель = h1.ссылка
-WHERE h1.родитель IS NULL OR h1.ссылка IS NULL;
 
 def глубокая_очистка(text):
     """Убираем все лишнее из имен"""
